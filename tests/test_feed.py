@@ -12,9 +12,13 @@ GROK_TEXT = """Here you go:
 
 def test_pipeline():
     spec = json.load(open(os.path.join(os.path.dirname(__file__), "..", "config", "example_client.json")))
+    orig_models, orig_check = feed.MODELS, feed.check_link
     feed.MODELS = {"gemini": lambda p: GEMINI_TEXT, "grok": lambda p: GROK_TEXT}
     feed.check_link = lambda r: r.update(link_status="live", link_note="", is_aggregator_url=feed.is_aggregator(r["url"]))
-    out = feed.run_client(spec)
+    try:
+        out = feed.run_client(spec)
+    finally:
+        feed.MODELS, feed.check_link = orig_models, orig_check
     roles = out["roles"]
     assert out["counts"]["raw_per_model"] == {"gemini": 2, "grok": 2}
     assert not any(r["company"] == "Current Employer Inc" for r in roles), "excluded company leaked"
@@ -32,3 +36,44 @@ def test_pipeline():
 
 if __name__ == "__main__":
     test_pipeline()
+
+
+class _Resp:
+    def __init__(self, status=200, url="", text="", data=None):
+        self.status_code, self.url, self.text, self._d = status, url, text, data
+    def json(self):
+        return self._d
+
+
+def test_link_checks():
+    import feed as f
+    real = {"title": "Director, Product & Technology Operations", "first_published": "2026-08-11T11:41:14-04:00",
+            "absolute_url": "https://boards.greenhouse.io/acme/jobs/7854596003"}
+    def fake_get(url, **k):
+        if "boards-api.greenhouse.io/v1/boards/acme/jobs/7854596003" in url:
+            return _Resp(200, url, "", real)
+        if "boards-api.greenhouse.io" in url:
+            return _Resp(404, url)
+        if "careers.example.com/jobs/123456789" in url:   # silent redirect to board home
+            return _Resp(200, "https://careers.example.com/search", "<html>All jobs</html>")
+        return _Resp(200, url, "<html>Director of Marketing Operations</html>")
+    orig = f.requests.get
+    f.requests.get = fake_get
+    try:
+        a = {"title": "Director, Product & Technology Operations", "url": "https://job-boards.greenhouse.io/acme/jobs/7854596003"}
+        b = {"title": "SimCorp Partnership Lead", "url": "https://job-boards.greenhouse.io/acme/jobs/4567890"}
+        c = {"title": "Head of Data", "url": "https://careers.example.com/jobs/123456789"}
+        d = {"title": "Director of Marketing Operations", "url": "https://jobs.lever.co/acme/abc"}
+        for r in (a, b, c, d):
+            f.check_link(r)
+        assert a["link_status"] == "live" and a["first_published"] == "2026-08-11" and not a["link_wrong"]
+        assert b["link_status"] == "unreachable" and b["link_wrong"], b
+        assert c["link_status"] == "unreachable" and c["link_wrong"], c
+        assert d["link_status"] == "live" and not d["link_wrong"], d
+        print("link checks OK")
+    finally:
+        f.requests.get = orig
+
+
+if __name__ == "__main__":
+    test_link_checks()

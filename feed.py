@@ -81,8 +81,12 @@ EXAMPLE TITLES: {', '.join(spec['example_good_titles'])}
 RULES
 - Only roles posted within the last {spec['recency_days']} days and still open.
 - Prefer the URL of the posting on the company's own careers site or ATS
-  (Greenhouse, Lever, Ashby, Workday, SmartRecruiters). Never invent a URL.
-  If you only found it on an aggregator, give that URL; it will be checked.
+  (Greenhouse, Lever, Ashby, Workday, SmartRecruiters).
+- Copy every URL EXACTLY as it appears in your search results. Never build,
+  guess, shorten or complete a URL or a job ID yourself. If you only found the
+  role on an aggregator, give that aggregator URL; it will be checked.
+- posted_date must come from the posting or search result itself; otherwise
+  write "unknown". Never estimate it.
 - Return at most {spec['max_roles_per_model']} roles, best fit first.
 
 OUTPUT: only a JSON array, no prose, no markdown fences. Each item:
@@ -212,15 +216,67 @@ def is_aggregator(url: str) -> bool:
     return any(a in host for a in AGGREGATOR_HOSTS)
 
 
+GREENHOUSE_JOB = re.compile(r"greenhouse\.io/(?:embed/job_app\?for=)?([A-Za-z0-9_-]+)/jobs/(\d+)")
+
+
+def wrong_link(role: dict, note: str) -> None:
+    """The role may be real but the model gave a bad address. Keep it as a lead
+    (status 'unreachable') so the Claude run searches the company's own site."""
+    role["link_status"] = "unreachable"
+    role["link_wrong"] = True
+    role["link_note"] = f"WRONG LINK ({note}) - role may still be real; find the posting on the company's own careers site"
+
+
+def check_greenhouse(role: dict, slug: str, job_id: str) -> bool:
+    """Checks a Greenhouse link against the board's public API. Returns True if handled."""
+    try:
+        r = requests.get(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{job_id}",
+                         headers=UA, timeout=25)
+    except requests.RequestException:
+        return False
+    if r.status_code == 404:
+        wrong_link(role, f"Greenhouse has no job {job_id} on board '{slug}'")
+        return True
+    if r.status_code != 200:
+        return False
+    data = r.json()
+    role["link_status"] = "live"
+    role["ats_title"] = data.get("title", "")
+    role["final_url"] = data.get("absolute_url", role["url"])
+    if data.get("first_published"):
+        role["first_published"] = data["first_published"][:10]
+    key = title_tokens(role["title"])
+    got = title_tokens(role["ats_title"])
+    if key and got and len(key & got) / len(key | got) < 0.5:
+        role["link_note"] = f"ATS title differs: '{role['ats_title']}' - Claude to check it is the same role"
+    else:
+        role["link_note"] = "confirmed on Greenhouse board API"
+    return True
+
+
 def check_link(role: dict) -> None:
-    """Fills link_status: live | closed | dead | unreachable."""
+    """Fills link_status: live | closed | dead | unreachable (incl. wrong links)."""
     role["is_aggregator_url"] = is_aggregator(role["url"])
+    role["link_wrong"] = False
+    m = GREENHOUSE_JOB.search(role["url"])
+    if m and check_greenhouse(role, m.group(1), m.group(2)):
+        return
     try:
         r = requests.get(role["url"], headers=UA, timeout=25, allow_redirects=True)
     except requests.RequestException as e:
         role["link_status"], role["link_note"] = "unreachable", type(e).__name__
         return
     role["final_url"] = r.url
+    final = r.url.lower()
+    if "error=true" in final or "error=" in urlsplit(final).query:
+        wrong_link(role, "job board redirected with an error flag")
+        return
+    # A job-specific address that lands on a page without its job ID is a silent
+    # redirect to the board's home page, not a live posting.
+    ids = re.findall(r"\d{6,}", urlsplit(role["url"]).path)
+    if ids and not any(i in final for i in ids) and not role["is_aggregator_url"]:
+        wrong_link(role, "redirected away from the job's own page")
+        return
     if r.status_code >= 400:
         role["link_status"], role["link_note"] = "dead", f"HTTP {r.status_code}"
         return
@@ -253,7 +309,7 @@ def send_via_resend(spec: dict, filename: str, payload: dict) -> str:
         f"<tr><td style='font-family:Arial;padding:2px 8px'>{r['company']}</td>"
         f"<td style='font-family:Arial;padding:2px 8px'>{r['title']}</td>"
         f"<td style='font-family:Arial;padding:2px 8px'>{'+'.join(r['source_models'])}</td>"
-        f"<td style='font-family:Arial;padding:2px 8px'>{r['link_status']}</td></tr>"
+        f"<td style='font-family:Arial;padding:2px 8px'>{'wrong link' if r.get('link_wrong') else r['link_status']}</td></tr>"
         for r in payload["roles"][:25]
     )
     errs = "".join(f"<p style='font-family:Arial;color:#b00'>{k} error: {v}</p>"
