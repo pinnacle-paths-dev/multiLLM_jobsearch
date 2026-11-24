@@ -1,0 +1,63 @@
+{
+  "client_id": "example_client",
+  "client_name": "Example Client",
+  "spec_version": "1.0",
+  "source_profile": "client profile JSON in Drive",
+  "drive_feed_folder_id": "SET_DRIVE_FOLDER_ID",
+  "recency_days": 14,
+  "max_roles_per_model": 15,
+  "candidate_summary": "Senior B2B marketing operations leader; Adobe AEP/AJO, Marketo, Salesforce, ABM. Based in the NYC metro.",
+  "target_functions": [
+    "Marketing Operations",
+    "GTM Operations (marketing-side)",
+    "Partner / Channel / Alliance Marketing",
+    "Demand Generation Operations",
+    "Revenue Marketing",
+    "Marketing Technology (MarTech)",
+    "Revenue Operations (marketing-side)",
+    "Integrated Marketing",
+    "Field Marketing",
+    "Growth Marketing",
+    "ABM"
+  ],
+  "target_seniority": [
+    "Director",
+    "Senior Director",
+    "VP",
+    "SVP",
+    "Head of"
+  ],
+  "target_industries": [
+    "B2B SaaS",
+    "Enterprise Technology",
+    "MarTech / AdTech",
+    "Cloud / Infrastructure",
+    "AI / Automation platforms",
+    "Data & Analytics",
+    "Telecom (B2B/enterprise only)",
+    "FinTech / B2B digital assets"
+  ],
+  "geography": "Remote (US), NYC metro / CT / NJ / Westchester hybrid, or major US metros (MA, DC, VA, MD, FL, TX, CA). No international roles.",
+  "comp_floor": "Base salary at least $200K for NYC-metro or NYC+remote roles; at least $250K base for all other markets. Undisclosed comp is allowed but must be flagged.",
+  "exclusions": [
+    "Sales enablement / GTM enablement / sales readiness / LMS / SKO roles",
+    "AI solutions engineering, applied AI architect, solutions consulting (hands-on model/RAG/agent building)",
+    "Corporate IT strategy, technology investment or infrastructure architecture roles",
+    "Quota-carrying sales (AE/BDR/SDR/account manager), pre-sales, customer success, primary product management",
+    "Consumer CPG/FMCG, retail, clinical healthcare, traditional (non-FinTech) financial services, government, non-profit, education, real estate, insurance",
+    "Any role whose disclosed base ceiling is below the applicable floor"
+  ],
+  "excluded_companies": [
+    "Current Employer Inc"
+  ],
+  "example_good_titles": [
+    "VP Marketing Operations",
+    "Director, Marketing Operations",
+    "Head of Marketing Technology",
+    "Senior Director, Partner Marketing",
+    "Director, Demand Generation",
+    "VP Revenue Marketing",
+    "Director, Marketing Automation & Orchestration",
+    "Head of GTM Operations (Marketing)"
+  ]
+}

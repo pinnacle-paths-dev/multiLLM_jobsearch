@@ -1,0 +1,7 @@
+out/
+__pycache__/
+*.pyc
+config/*.json
+!config/example_client.json
+.env
+*sa*.json

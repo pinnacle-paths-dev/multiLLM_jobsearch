@@ -1,0 +1,34 @@
+name: Multi-LLM role feed
+
+on:
+  schedule:
+    # Mon & Thu 11:15 UTC = 6:15am ET (winter) / 7:15am ET (summer),
+    # ahead of the 8am ET Claude role-fit runs.
+    - cron: "15 11 * * 1,4"
+  workflow_dispatch:
+    inputs:
+      clients:
+        description: "Client ids to run (space-separated, blank = all)"
+        required: false
+        default: ""
+
+jobs:
+  feed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python tests/test_feed.py
+      - name: Build and upload feeds
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          CLIENT_SPECS_JSON: ${{ secrets.CLIENT_SPECS_JSON }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GROK_MODEL: ${{ vars.GROK_MODEL }}
+        run: python feed.py ${{ github.event.inputs.clients }}
