@@ -140,6 +140,58 @@ def call_grok(prompt: str) -> str:
 MODELS = {"gemini": call_gemini, "grok": call_grok}
 
 
+# ---------------------------------------------------------------- The Muse (job board API)
+MUSE_URL = "https://www.themuse.com/api/public/jobs"
+
+
+def fetch_muse(spec: dict) -> list[dict]:
+    """Real listings from The Muse's public jobs API, filtered by the spec's
+    `muse` block: categories, levels, locations, title_keywords, max_pages.
+    Not an LLM, so links are real; still discovery only."""
+    cfg = spec["muse"]
+    keywords = [k.lower() for k in cfg.get("title_keywords", [])]
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=spec.get("recency_days", 14))
+    params: list[tuple[str, str]] = [("descending", "true")]
+    params += [("category", c) for c in cfg.get("categories", [])]
+    params += [("level", lv) for lv in cfg.get("levels", [])]
+    params += [("location", loc) for loc in cfg.get("locations", [])]
+    key = os.environ.get("MUSE_API_KEY")
+    if key:
+        params.append(("api_key", key))
+    out, seen = [], set()
+    for page in range(int(cfg.get("max_pages", 10))):
+        r = requests.get(MUSE_URL, params=params + [("page", str(page))], headers=UA, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        for job in data.get("results", []):
+            title = job.get("name", "")
+            if keywords and not any(k in title.lower() for k in keywords):
+                continue
+            pub = job.get("publication_date", "")
+            try:
+                if dt.datetime.fromisoformat(pub.replace("Z", "+00:00")) < cutoff:
+                    continue
+            except ValueError:
+                pass
+            url = (job.get("refs") or {}).get("landing_page", "")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            out.append({
+                "title": title,
+                "company": (job.get("company") or {}).get("name", ""),
+                "url": url,
+                "location": "; ".join(l.get("name", "") for l in job.get("locations", [])),
+                "posted_date": pub[:10] or "unknown",
+                "comp": "not disclosed",
+                "why_fit": "The Muse listing matching " + ", ".join(
+                    lv.get("name", "") for lv in job.get("levels", [])),
+            })
+        if page + 1 >= int(data.get("page_count", 0)):
+            break
+    return out
+
+
 # ---------------------------------------------------------------- parsing
 def extract_json_array(text: str) -> list[dict]:
     text = re.sub(r"```(?:json)?", "", text or "")
@@ -318,7 +370,7 @@ def send_via_resend(spec: dict, filename: str, payload: dict) -> str:
         f"<p style='font-family:Arial'>Automated multi-LLM role feed for <b>{spec['client_name']}</b>. "
         f"Discovery leads only; the Claude run verifies each before anything reaches the client.</p>"
         f"<p style='font-family:Arial'>Gemini {c['raw_per_model'].get('gemini', 0)} · Grok "
-        f"{c['raw_per_model'].get('grok', 0)} · after dedupe {c['after_dedupe']} · live {c['live']} · "
+        f"{c['raw_per_model'].get('grok', 0)} · Muse {c['raw_per_model'].get('muse', '-')} · after dedupe {c['after_dedupe']} · live {c['live']} · "
         f"found by both {c['multi_model']}</p>{errs}"
         f"<table style='border-collapse:collapse;font-size:12px'>{rows}</table>"
     )
@@ -360,6 +412,14 @@ def run_client(spec: dict) -> dict:
             errors.pop(name, None)
         print(f"  {name}: {len(results[name])} roles", file=sys.stderr)
 
+    if spec.get("muse"):
+        try:
+            results["muse"] = fetch_muse(spec)
+        except Exception as e:  # noqa: BLE001
+            results["muse"] = []
+            errors["muse"] = f"{type(e).__name__}: {e}"[:300]
+        print(f"  muse: {len(results['muse'])} roles", file=sys.stderr)
+
     roles = [r for r in merge(results) if not excluded(r, spec)]
     for r in roles:
         check_link(r)
@@ -369,7 +429,8 @@ def run_client(spec: dict) -> dict:
     return {
         "client_id": spec["client_id"],
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "models": {"gemini": GEMINI_MODEL, "grok": GROK_MODEL},
+        "models": {"gemini": GEMINI_MODEL, "grok": GROK_MODEL,
+                   **({"muse": "themuse.com jobs API"} if spec.get("muse") else {})},
         "model_errors": errors,
         "counts": {
             "raw_per_model": {k: len(v) for k, v in results.items()},

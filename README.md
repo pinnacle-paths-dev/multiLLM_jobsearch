@@ -1,6 +1,6 @@
 # Pinnacle Paths — Multi-LLM Role Feed
 
-Runs Gemini and Grok with live web search against each client spec, merges and
+Runs Gemini and Grok with live web search, plus The Muse's jobs API, against each client spec, merges and
 de-duplicates their roles, checks every link, and emails a dated JSON feed (as an
 attachment, subject `[Role Feed] <client_id> <date>`) via Resend. The client's
 Claude scheduled task (Mon/Thu 8am ET) finds that email in Gmail, runs the
@@ -14,6 +14,8 @@ Schedule: Mon & Thu 11:15 UTC (6:15am ET winter / 7:15am ET summer).
 1. **Secrets** — repo Settings → Secrets and variables → Actions → **Secrets** tab → New repository secret:
    - `GEMINI_API_KEY` — from https://aistudio.google.com/apikey
    - `XAI_API_KEY` — from https://console.x.ai
+   - `MUSE_API_KEY` — from https://www.themuse.com/developers (optional: raises The Muse rate limit;
+     The Muse runs only for clients whose spec has a `muse` block)
    - `RESEND_API_KEY` — from https://resend.com/api-keys (a "Sending access" key is enough)
    - `CLIENT_SPECS_JSON` — a JSON list of client specs (shape of
      `config/example_client.json`). Client data never goes in this repo.
