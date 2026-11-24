@@ -5,18 +5,22 @@ Pinnacle Paths — multi-LLM role feed.
 For each client spec in config/, asks Gemini (Google Search grounding) and
 Grok (xAI web_search tool) for open roles, normalizes the results to one
 schema, removes duplicates, checks every link is live, scores consensus
-(how many models found the same role), and uploads a dated JSON feed to the
-client's Google Drive folder. The Claude scheduled task picks the feed up
-and runs the role-fit skill on it.
+(how many models found the same role), and emails a dated JSON feed as an
+attachment via Resend. The Claude scheduled task finds it in Gmail and runs
+the role-fit skill on it.
 
 Environment variables (GitHub Secrets):
   GEMINI_API_KEY             Google AI Studio key
   XAI_API_KEY                xAI key
-  GDRIVE_SA_JSON             Google service-account JSON (full text)
+  RESEND_API_KEY             Resend key (sends the feed email)
+  CLIENT_SPECS_JSON          JSON list of client specs
+GitHub Actions variables:
+  FEED_EMAIL_FROM            verified Resend sender, e.g. Role Feed <jobs@yourdomain>
+  FEED_EMAIL_TO              inbox the Claude scheduled task reads
 Optional:
   GEMINI_MODEL  (default gemini-3.5-flash)
   GROK_MODEL    (default grok-4.7)
-  DRY_RUN=1     write feed to ./out/ instead of Drive
+  DRY_RUN=1     write feed to ./out/ instead of emailing
 """
 from __future__ import annotations
 
@@ -238,23 +242,48 @@ def excluded(role: dict, spec: dict) -> bool:
     return any(company_key(x) == ck for x in spec.get("excluded_companies", []))
 
 
-# ---------------------------------------------------------------- drive
-def upload_to_drive(spec: dict, filename: str, payload: dict) -> str:
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaInMemoryUpload
-
-    creds = service_account.Credentials.from_service_account_info(
-        json.loads(os.environ["GDRIVE_SA_JSON"]),
-        scopes=["https://www.googleapis.com/auth/drive"],
+# ---------------------------------------------------------------- delivery
+def send_via_resend(spec: dict, filename: str, payload: dict) -> str:
+    """Emails the feed as a JSON attachment. The client's Claude scheduled task
+    finds it in Gmail by subject and reads the attachment."""
+    import base64
+    c = payload["counts"]
+    subject = f"[Role Feed] {spec['client_id']} {dt.date.today().isoformat()}"
+    rows = "".join(
+        f"<tr><td style='font-family:Arial;padding:2px 8px'>{r['company']}</td>"
+        f"<td style='font-family:Arial;padding:2px 8px'>{r['title']}</td>"
+        f"<td style='font-family:Arial;padding:2px 8px'>{'+'.join(r['source_models'])}</td>"
+        f"<td style='font-family:Arial;padding:2px 8px'>{r['link_status']}</td></tr>"
+        for r in payload["roles"][:25]
     )
-    svc = build("drive", "v3", credentials=creds, cache_discovery=False)
-    media = MediaInMemoryUpload(json.dumps(payload, indent=2).encode(), mimetype="application/json")
-    f = svc.files().create(
-        body={"name": filename, "parents": [spec["drive_feed_folder_id"]], "mimeType": "application/json"},
-        media_body=media, fields="id", supportsAllDrives=True,
-    ).execute()
-    return f["id"]
+    errs = "".join(f"<p style='font-family:Arial;color:#b00'>{k} error: {v}</p>"
+                   for k, v in payload["model_errors"].items())
+    html = (
+        f"<p style='font-family:Arial'>Automated multi-LLM role feed for <b>{spec['client_name']}</b>. "
+        f"Discovery leads only; the Claude run verifies each before anything reaches the client.</p>"
+        f"<p style='font-family:Arial'>Gemini {c['raw_per_model'].get('gemini', 0)} · Grok "
+        f"{c['raw_per_model'].get('grok', 0)} · after dedupe {c['after_dedupe']} · live {c['live']} · "
+        f"found by both {c['multi_model']}</p>{errs}"
+        f"<table style='border-collapse:collapse;font-size:12px'>{rows}</table>"
+    )
+    r = requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {os.environ['RESEND_API_KEY']}",
+                 "Content-Type": "application/json"},
+        json={
+            "from": os.environ["FEED_EMAIL_FROM"],
+            "to": [os.environ["FEED_EMAIL_TO"]],
+            "subject": subject,
+            "html": html,
+            "attachments": [{
+                "filename": filename,
+                "content": base64.b64encode(json.dumps(payload, indent=2).encode()).decode(),
+            }],
+        },
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json().get("id", "")
 
 
 # ---------------------------------------------------------------- main
@@ -319,12 +348,12 @@ def main() -> int:
         print(f"[{spec['client_id']}]", file=sys.stderr)
         payload = run_client(spec)
         fname = f"{spec['client_id']}_role_feed_{dt.date.today().isoformat()}.json"
-        if dry or spec.get("drive_feed_folder_id", "").startswith("SET_"):
+        if dry:
             os.makedirs("out", exist_ok=True)
             json.dump(payload, open(os.path.join("out", fname), "w"), indent=2)
             print(f"  wrote out/{fname}", file=sys.stderr)
         else:
-            print(f"  uploaded {fname} -> {upload_to_drive(spec, fname, payload)}", file=sys.stderr)
+            print(f"  emailed {fname} (Resend id {send_via_resend(spec, fname, payload)})", file=sys.stderr)
         if len(payload["model_errors"]) == len(MODELS):
             rc = 1  # every model failed: make the GitHub run go red
     return rc

@@ -27,7 +27,9 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          FEED_EMAIL_FROM: ${{ vars.FEED_EMAIL_FROM }}
+          FEED_EMAIL_TO: ${{ vars.FEED_EMAIL_TO }}
           CLIENT_SPECS_JSON: ${{ secrets.CLIENT_SPECS_JSON }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           GROK_MODEL: ${{ vars.GROK_MODEL }}

@@ -3,7 +3,6 @@
   "client_name": "Example Client",
   "spec_version": "1.0",
   "source_profile": "client profile JSON in Drive",
-  "drive_feed_folder_id": "SET_DRIVE_FOLDER_ID",
   "recency_days": 14,
   "max_roles_per_model": 15,
   "candidate_summary": "Senior B2B marketing operations leader; Adobe AEP/AJO, Marketo, Salesforce, ABM. Based in the NYC metro.",
