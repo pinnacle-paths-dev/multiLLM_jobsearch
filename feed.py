@@ -283,6 +283,9 @@ def check_greenhouse(role: dict, slug: str, job_id: str) -> bool:
         return False
     data = r.json()
     role["link_status"] = "live"
+    role["ats_confirmed"] = True
+    role["ats_source"] = f"Greenhouse (board '{slug}')"
+    role["ats_checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes")
     role["ats_title"] = data.get("title", "")
     role["final_url"] = data.get("absolute_url", role["url"])
     if data.get("first_published"):
@@ -296,13 +299,112 @@ def check_greenhouse(role: dict, slug: str, job_id: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------------- Workday
+# Workday careers sites are JavaScript apps that page fetchers can't read, but
+# every Workday site has a public JSON endpoint (the one its own page calls).
+WORKDAY_JOB = re.compile(
+    r"https://([\w-]+)\.wd(\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?([^/?#]+)/job/([^?#]+)")
+# Public careers sites of target firms (tenant, wd-number, site). Not secret.
+KNOWN_WORKDAY = {
+    "state street": ("statestreet", "1", "Global"),
+    "charles river development": ("statestreet", "1", "Global"),
+    "simcorp": ("simcorp", "3", "SimCorp_Jobs"),
+    "fidelity investments": ("fmr", "1", "FidelityCareers"),
+    "fidelity": ("fmr", "1", "FidelityCareers"),
+}
+
+
+def workday_base(tenant: str, n: str) -> str:
+    return f"https://{tenant}.wd{n}.myworkdayjobs.com"
+
+
+def workday_detail(role: dict, tenant: str, n: str, site: str, path: str) -> bool:
+    """Reads one posting from Workday's JSON endpoint. Returns True if handled."""
+    path = path.strip("/")
+    if not path.startswith("job/"):
+        path = "job/" + path
+    try:
+        r = requests.get(f"{workday_base(tenant, n)}/wday/cxs/{tenant}/{site}/{path}",
+                         headers={**UA, "Accept": "application/json"}, timeout=25)
+    except requests.RequestException:
+        return False
+    if r.status_code == 404:
+        return False
+    if r.status_code != 200:
+        return False
+    info = (r.json() or {}).get("jobPostingInfo") or {}
+    if not info:
+        return False
+    role["ats_title"] = info.get("title", "")
+    role["final_url"] = info.get("externalUrl") or f"{workday_base(tenant, n)}/{site}/{path}"
+    role["requisition_id"] = info.get("jobReqId", "")
+    if info.get("startDate"):
+        role["first_published"] = str(info["startDate"])[:10]
+    if info.get("canApply") is False:
+        role["link_status"], role["link_note"] = "closed", "Workday says applications are closed"
+        return True
+    role["link_status"] = "live"
+    role["ats_confirmed"] = True
+    role["ats_source"] = f"Workday ({tenant}.wd{n}.myworkdayjobs.com)"
+    role["ats_checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes")
+    role["link_note"] = "confirmed open on the company's Workday careers site"
+    return True
+
+
+def workday_search(role: dict, tenant: str, n: str, site: str) -> bool:
+    """Finds a lead by title on the company's Workday site (for wrong/dead links)."""
+    try:
+        r = requests.post(f"{workday_base(tenant, n)}/wday/cxs/{tenant}/{site}/jobs",
+                          headers={**UA, "Accept": "application/json", "Content-Type": "application/json"},
+                          json={"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": role["title"]},
+                          timeout=25)
+        if r.status_code != 200:
+            return False
+        postings = (r.json() or {}).get("jobPostings") or []
+    except (requests.RequestException, ValueError):
+        return False
+    want = title_tokens(role["title"])
+    best, best_score = None, 0.0
+    for p in postings:
+        got = title_tokens(p.get("title", ""))
+        if want and got:
+            score = len(want & got) / len(want | got)
+            if score > best_score:
+                best, best_score = p, score
+    if not best or best_score < 0.5:
+        return False
+    found = workday_detail(role, tenant, n, site, best.get("externalPath", ""))
+    if found:
+        role["url"] = f"{workday_base(tenant, n)}/{site}{best.get('externalPath', '')}"
+        role["link_wrong"] = False
+        role["link_note"] = "original link was wrong; found on the company's Workday site by title"
+    return found
+
+
 def check_link(role: dict) -> None:
     """Fills link_status: live | closed | dead | unreachable (incl. wrong links)."""
     role["is_aggregator_url"] = is_aggregator(role["url"])
     role["link_wrong"] = False
+    role.setdefault("ats_confirmed", False)
     m = GREENHOUSE_JOB.search(role["url"])
     if m and check_greenhouse(role, m.group(1), m.group(2)):
         return
+    w = WORKDAY_JOB.search(role["url"])
+    if w and workday_detail(role, *w.groups()):
+        return
+    _check_page(role)
+    # Bad or aggregator link at a firm whose Workday site we know: look it up by title.
+    if role["link_status"] != "live" or role["is_aggregator_url"] or role.get("link_wrong"):
+        ck = company_key(role.get("company", ""))
+        tenant = next((v for k, v in KNOWN_WORKDAY.items() if k in ck), None)
+        if not tenant and w:
+            tenant = (w.group(1), w.group(2), w.group(3))
+        if tenant:
+            workday_search(role, *tenant)
+
+
+def _check_page(role: dict) -> None:
+    """Plain page check for anything without an ATS API."""
     try:
         r = requests.get(role["url"], headers=UA, timeout=25, allow_redirects=True)
     except requests.RequestException as e:
@@ -351,7 +453,7 @@ def send_via_resend(spec: dict, filename: str, payload: dict) -> str:
         f"<tr><td style='font-family:Arial;padding:2px 8px'>{r['company']}</td>"
         f"<td style='font-family:Arial;padding:2px 8px'>{r['title']}</td>"
         f"<td style='font-family:Arial;padding:2px 8px'>{'+'.join(r['source_models'])}</td>"
-        f"<td style='font-family:Arial;padding:2px 8px'>{'wrong link' if r.get('link_wrong') else r['link_status']}</td></tr>"
+        f"<td style='font-family:Arial;padding:2px 8px'>{'wrong link' if r.get('link_wrong') else ('confirmed on company ATS' if r.get('ats_confirmed') else r['link_status'])}</td></tr>"
         for r in payload["roles"][:25]
     )
     errs = "".join(f"<p style='font-family:Arial;color:#b00'>{k} error: {v}</p>"

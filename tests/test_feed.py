@@ -101,3 +101,46 @@ def test_muse_and_redact():
 
 if __name__ == "__main__":
     test_muse_and_redact()
+
+
+def test_workday():
+    import feed as f
+    detail = {"jobPostingInfo": {"title": "Head of Product, Private Markets", "jobReqId": "R-123",
+                                 "startDate": "2026-11-20", "canApply": True,
+                                 "externalUrl": "https://statestreet.wd1.myworkdayjobs.com/Global/job/Boston/Head-of-Product_R-123"}}
+    closed = {"jobPostingInfo": {"title": "Old Role", "jobReqId": "R-9", "canApply": False}}
+    def fake_get(url, **k):
+        if "/wday/cxs/statestreet/Global/job/Boston/Head-of-Product_R-123" in url:
+            return _Resp(200, url, "", detail)
+        if "/wday/cxs/fmr/FidelityCareers/job/X/Old_R-9" in url:
+            return _Resp(200, url, "", closed)
+        if "careers.statestreet.com" in url:
+            return _Resp(404, url, "")
+        return _Resp(404, url, "")
+    def fake_post(url, json=None, **k):
+        assert "/wday/cxs/statestreet/Global/jobs" in url and json["searchText"]
+        return _Resp(200, url, "", {"jobPostings": [
+            {"title": "Associate, Fund Accounting", "externalPath": "/job/Boston/Assoc_R-1"},
+            {"title": "Head of Product, Private Markets", "externalPath": "/job/Boston/Head-of-Product_R-123"}]})
+    og, op = f.requests.get, f.requests.post
+    f.requests.get, f.requests.post = fake_get, fake_post
+    try:
+        a = {"title": "Head of Product, Private Markets", "company": "State Street",
+             "url": "https://statestreet.wd1.myworkdayjobs.com/en-US/Global/job/Boston/Head-of-Product_R-123"}
+        b = {"title": "Head of Product, Private Markets", "company": "State Street / Charles River Development",
+             "url": "https://careers.statestreet.com/jobs/999999999"}   # dead link -> found by title
+        c = {"title": "Old Role", "company": "Fidelity Investments",
+             "url": "https://fmr.wd1.myworkdayjobs.com/FidelityCareers/job/X/Old_R-9"}
+        for r in (a, b, c):
+            f.check_link(r)
+        assert a["link_status"] == "live" and a["ats_confirmed"] and a["requisition_id"] == "R-123", a
+        assert a["first_published"] == "2026-11-20"
+        assert b["link_status"] == "live" and b["ats_confirmed"] and "Head-of-Product_R-123" in b["url"], b
+        assert c["link_status"] == "closed" and not c["ats_confirmed"], c
+        print("workday OK")
+    finally:
+        f.requests.get, f.requests.post = og, op
+
+
+if __name__ == "__main__":
+    test_workday()
