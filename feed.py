@@ -392,7 +392,13 @@ def run_client(spec: dict) -> dict:
     def ask(name, fn):
         for attempt in (1, 2):
             try:
-                return extract_json_array(fn(prompt)), None
+                text = fn(prompt)
+                roles = extract_json_array(text)
+                if not roles:
+                    # Answered, but not as a JSON list of roles: say so instead of a silent 0.
+                    snippet = " ".join((text or "").split())[:160] or "(empty reply)"
+                    return [], redact(f"no roles in reply: {snippet}")
+                return roles, None
             except Exception as e:  # noqa: BLE001
                 err = redact(f"{type(e).__name__}: {e}")[:300]
                 if isinstance(e, requests.Timeout) or attempt == 2:
