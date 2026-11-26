@@ -67,7 +67,7 @@ SENIORITY = {"senior", "sr", "director", "vp", "vice", "president", "svp", "evp"
 # ---------------------------------------------------------------- prompt
 def build_prompt(spec: dict) -> str:
     today = dt.date.today().isoformat()
-    return f"""You are a senior executive recruiter. Today is {today}.
+    return f"""You are {spec.get('recruiter', 'a senior executive recruiter')}. Today is {today}.
 Use live web search to find CURRENTLY OPEN job postings for this candidate.
 
 CANDIDATE: {spec['candidate_summary']}
