@@ -135,23 +135,31 @@ MODELS = {"gemini": call_gemini, "grok": call_grok}
 
 
 # ---------------------------------------------------------------- Muse (Meta Model API)
+MUSE_FALLBACKS = ["muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.1"]
+
+
 def call_muse(prompt: str) -> str:
-    """Meta's Muse Spark via the OpenAI-compatible Responses API, with web search."""
+    """Meta's Muse Spark via the OpenAI-compatible Responses API, with web search.
+    Falls back to older Muse Spark versions if the key can't use the newest."""
     key = os.environ["MUSE_API_KEY"]
-    body = {"model": MUSE_MODEL, "input": [{"role": "user", "content": prompt}],
-            "tools": [{"type": "web_search"}]}
-    r = requests.post("https://api.meta.ai/v1/responses",
-                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                      json=body, timeout=TIMEOUT)
-    if r.status_code == 400 and "tool" in r.text.lower():
-        # Tool name differs on this account: retry with the preview tool name.
-        body["tools"] = [{"type": "web_search_preview"}]
-        r = requests.post("https://api.meta.ai/v1/responses",
-                          headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                          json=body, timeout=TIMEOUT)
-    if r.status_code >= 400:
-        raise RuntimeError(f"Meta Model API HTTP {r.status_code}: {r.text[:200]}")
-    return responses_text(r.json())
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    models = [MUSE_MODEL] + [m for m in MUSE_FALLBACKS if m != MUSE_MODEL]
+    last = ""
+    for model in models:
+        for tool in ("web_search", "web_search_preview"):
+            body = {"model": model, "input": [{"role": "user", "content": prompt}],
+                    "tools": [{"type": tool}]}
+            r = requests.post("https://api.meta.ai/v1/responses", headers=headers,
+                              json=body, timeout=TIMEOUT)
+            if r.status_code < 400:
+                return responses_text(r.json())
+            last = f"Meta Model API HTTP {r.status_code} ({model}): {r.text[:200]}"
+            if r.status_code == 400 and "tool" in r.text.lower():
+                continue  # try the other web-search tool name
+            break
+        if "model_not_found" not in last and "not found" not in last.lower():
+            break  # a different error: don't keep trying other models
+    raise RuntimeError(last)
 
 
 def responses_text(data: dict) -> str:

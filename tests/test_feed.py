@@ -144,3 +144,29 @@ def test_workday():
 
 if __name__ == "__main__":
     test_workday()
+
+
+def test_muse_fallback():
+    import os
+    import feed as f
+    seen = []
+    def fake_post(url, json=None, **k):
+        seen.append(json["model"])
+        if json["model"] == "muse-spark-1.3":
+            return _Resp(404, url, '{"error":{"code":"model_not_found"}}')
+        return _Resp(200, url, "", {"output_text": MUSE_TEXT})
+    op = f.requests.post
+    f.requests.post = fake_post
+    os.environ["MUSE_API_KEY"] = "LLM_test_key_123"
+    try:
+        out = f.call_muse("p")
+        assert seen == ["muse-spark-1.3", "muse-spark-1.2"], seen
+        assert "Klaviyo" in out
+        print("muse fallback OK")
+    finally:
+        f.requests.post = op
+        del os.environ["MUSE_API_KEY"]
+
+
+if __name__ == "__main__":
+    test_muse_fallback()
