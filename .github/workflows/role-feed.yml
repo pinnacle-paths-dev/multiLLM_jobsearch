@@ -2,9 +2,14 @@ name: Multi-LLM role feed
 
 on:
   schedule:
-    # Mon & Thu 11:15 UTC = 6:15am ET (winter) / 7:15am ET (summer),
-    # ahead of the 8am ET Claude role-fit runs.
-    - cron: "15 11 * * 1,4"
+    # GitHub schedules are best-effort: runs can be delayed or dropped under
+    # load (the first scheduled run, Thu 2026-11-26, never fired). So run twice,
+    # early and off the busy top/quarter-hour minutes:
+    #   09:07 UTC = 4:07am ET (winter) / 5:07am ET (summer)  - main run
+    #   10:37 UTC = 5:37am ET (winter) / 6:37am ET (summer)  - backup
+    # Each client task reads the NEWEST feed email, so a second email is harmless.
+    - cron: "7 9 * * 1,4"
+    - cron: "37 10 * * 1,4"
   workflow_dispatch:
     inputs:
       clients:
