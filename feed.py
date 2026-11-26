@@ -37,7 +37,9 @@ import requests
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash"
 GROK_MODEL = os.environ.get("GROK_MODEL") or "grok-4.7"
-TIMEOUT = 180
+MUSE_MODEL = os.environ.get("MUSE_MODEL") or "muse-spark-1.3"
+# Web-search calls can take several minutes; one generous attempt beats two short ones.
+TIMEOUT = 420
 UA = {"User-Agent": "Mozilla/5.0 (PinnaclePathsRoleFeed/1.0)"}
 
 FIELDS = ["title", "company", "url", "location", "posted_date", "comp", "why_fit"]
@@ -126,7 +128,34 @@ def call_grok(prompt: str) -> str:
         timeout=TIMEOUT,
     )
     r.raise_for_status()
-    data = r.json()
+    return responses_text(r.json())
+
+
+MODELS = {"gemini": call_gemini, "grok": call_grok}
+
+
+# ---------------------------------------------------------------- Muse (Meta Model API)
+def call_muse(prompt: str) -> str:
+    """Meta's Muse Spark via the OpenAI-compatible Responses API, with web search."""
+    key = os.environ["MUSE_API_KEY"]
+    body = {"model": MUSE_MODEL, "input": [{"role": "user", "content": prompt}],
+            "tools": [{"type": "web_search"}]}
+    r = requests.post("https://api.meta.ai/v1/responses",
+                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                      json=body, timeout=TIMEOUT)
+    if r.status_code == 400 and "tool" in r.text.lower():
+        # Tool name differs on this account: retry with the preview tool name.
+        body["tools"] = [{"type": "web_search_preview"}]
+        r = requests.post("https://api.meta.ai/v1/responses",
+                          headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                          json=body, timeout=TIMEOUT)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Meta Model API HTTP {r.status_code}: {r.text[:200]}")
+    return responses_text(r.json())
+
+
+def responses_text(data: dict) -> str:
+    """Pulls the text out of an OpenAI-style Responses API reply."""
     if isinstance(data.get("output_text"), str):
         return data["output_text"]
     texts = []
@@ -137,59 +166,20 @@ def call_grok(prompt: str) -> str:
     return "\n".join(texts)
 
 
-MODELS = {"gemini": call_gemini, "grok": call_grok}
+if os.environ.get("MUSE_API_KEY"):
+    MODELS["muse"] = call_muse
 
 
-# ---------------------------------------------------------------- The Muse (job board API)
-MUSE_URL = "https://www.themuse.com/api/public/jobs"
+SECRET_ENV = ("GEMINI_API_KEY", "XAI_API_KEY", "MUSE_API_KEY", "RESEND_API_KEY")
 
 
-def fetch_muse(spec: dict) -> list[dict]:
-    """Real listings from The Muse's public jobs API, filtered by the spec's
-    `muse` block: categories, levels, locations, title_keywords, max_pages.
-    Not an LLM, so links are real; still discovery only."""
-    cfg = spec["muse"]
-    keywords = [k.lower() for k in cfg.get("title_keywords", [])]
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=spec.get("recency_days", 14))
-    params: list[tuple[str, str]] = [("descending", "true")]
-    params += [("category", c) for c in cfg.get("categories", [])]
-    params += [("level", lv) for lv in cfg.get("levels", [])]
-    params += [("location", loc) for loc in cfg.get("locations", [])]
-    key = os.environ.get("MUSE_API_KEY")
-    if key:
-        params.append(("api_key", key))
-    out, seen = [], set()
-    for page in range(int(cfg.get("max_pages", 10))):
-        r = requests.get(MUSE_URL, params=params + [("page", str(page))], headers=UA, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        for job in data.get("results", []):
-            title = job.get("name", "")
-            if keywords and not any(k in title.lower() for k in keywords):
-                continue
-            pub = job.get("publication_date", "")
-            try:
-                if dt.datetime.fromisoformat(pub.replace("Z", "+00:00")) < cutoff:
-                    continue
-            except ValueError:
-                pass
-            url = (job.get("refs") or {}).get("landing_page", "")
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            out.append({
-                "title": title,
-                "company": (job.get("company") or {}).get("name", ""),
-                "url": url,
-                "location": "; ".join(l.get("name", "") for l in job.get("locations", [])),
-                "posted_date": pub[:10] or "unknown",
-                "comp": "not disclosed",
-                "why_fit": "The Muse listing matching " + ", ".join(
-                    lv.get("name", "") for lv in job.get("levels", [])),
-            })
-        if page + 1 >= int(data.get("page_count", 0)):
-            break
-    return out
+def redact(text: str) -> str:
+    """Never let an API key reach an email, attachment or log."""
+    for var in SECRET_ENV:
+        val = os.environ.get(var)
+        if val and len(val) > 6:
+            text = text.replace(val, "[REDACTED]")
+    return re.sub(r"(api_key|key|token)=[^&\s'\"]+", r"\1=[REDACTED]", text, flags=re.I)
 
 
 # ---------------------------------------------------------------- parsing
@@ -398,27 +388,27 @@ def send_via_resend(spec: dict, filename: str, payload: dict) -> str:
 def run_client(spec: dict) -> dict:
     prompt = build_prompt(spec)
     results, errors = {}, {}
-    for name, fn in MODELS.items():
+
+    def ask(name, fn):
         for attempt in (1, 2):
             try:
-                results[name] = extract_json_array(fn(prompt))
-                break
+                return extract_json_array(fn(prompt)), None
             except Exception as e:  # noqa: BLE001
-                errors[name] = f"{type(e).__name__}: {e}"[:300]
+                err = redact(f"{type(e).__name__}: {e}")[:300]
+                if isinstance(e, requests.Timeout) or attempt == 2:
+                    return [], err  # a timeout already waited TIMEOUT seconds
                 time.sleep(5)
-        else:
-            results[name] = []
-        if results[name]:
-            errors.pop(name, None)
-        print(f"  {name}: {len(results[name])} roles", file=sys.stderr)
+        return [], "no attempt made"
 
-    if spec.get("muse"):
-        try:
-            results["muse"] = fetch_muse(spec)
-        except Exception as e:  # noqa: BLE001
-            results["muse"] = []
-            errors["muse"] = f"{type(e).__name__}: {e}"[:300]
-        print(f"  muse: {len(results['muse'])} roles", file=sys.stderr)
+    # The models run at the same time, so a slow one doesn't hold up the others.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(MODELS)) as pool:
+        futures = {name: pool.submit(ask, name, fn) for name, fn in MODELS.items()}
+    for name, fut in futures.items():
+        results[name], err = fut.result()
+        if err and not results[name]:
+            errors[name] = err
+        print(f"  {name}: {len(results[name])} roles", file=sys.stderr)
 
     roles = [r for r in merge(results) if not excluded(r, spec)]
     for r in roles:
@@ -430,7 +420,7 @@ def run_client(spec: dict) -> dict:
         "client_id": spec["client_id"],
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "models": {"gemini": GEMINI_MODEL, "grok": GROK_MODEL,
-                   **({"muse": "themuse.com jobs API"} if spec.get("muse") else {})},
+                   **({"muse": MUSE_MODEL} if "muse" in MODELS else {})},
         "model_errors": errors,
         "counts": {
             "raw_per_model": {k: len(v) for k, v in results.items()},

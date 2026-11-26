@@ -10,18 +10,18 @@ GROK_TEXT = """Here you go:
 [{"title":"Sr. Director Marketing Operations","company":"Braze","url":"https://www.linkedin.com/jobs/view/555","location":"NYC","posted_date":"unknown","comp":"$220K-$260K","why_fit":"ops leader"},
  {"title":"Head of Demand Generation","company":"Klaviyo","url":"https://job-boards.greenhouse.io/klaviyo/jobs/77","location":"Remote","posted_date":"2026-11-18","comp":"not disclosed","why_fit":"demand gen"}]"""
 
+MUSE_TEXT = """[{"title":"Head of Demand Generation","company":"Klaviyo","url":"https://job-boards.greenhouse.io/klaviyo/jobs/77","location":"Remote","posted_date":"2026-11-20","comp":"not disclosed","why_fit":"muse"}]"""
+
+
 def test_pipeline():
     spec = json.load(open(os.path.join(os.path.dirname(__file__), "..", "config", "example_client.json")))
-    orig_models, orig_check, orig_muse = feed.MODELS, feed.check_link, feed.fetch_muse
-    feed.MODELS = {"gemini": lambda p: GEMINI_TEXT, "grok": lambda p: GROK_TEXT}
+    orig_models, orig_check = feed.MODELS, feed.check_link
+    feed.MODELS = {"gemini": lambda p: GEMINI_TEXT, "grok": lambda p: GROK_TEXT, "muse": lambda p: MUSE_TEXT}
     feed.check_link = lambda r: r.update(link_status="live", link_note="", is_aggregator_url=feed.is_aggregator(r["url"]))
-    feed.fetch_muse = lambda s: [{"title": "Head of Demand Generation", "company": "Klaviyo",
-                                  "url": "https://job-boards.greenhouse.io/klaviyo/jobs/77", "location": "Remote",
-                                  "posted_date": "2026-11-20", "comp": "not disclosed", "why_fit": "muse"}]
     try:
         out = feed.run_client(spec)
     finally:
-        feed.MODELS, feed.check_link, feed.fetch_muse = orig_models, orig_check, orig_muse
+        feed.MODELS, feed.check_link = orig_models, orig_check
     roles = out["roles"]
     assert out["counts"]["raw_per_model"] == {"gemini": 2, "grok": 2, "muse": 1}
     klaviyo = [r for r in roles if r["company"] == "Klaviyo"][0]
@@ -84,36 +84,20 @@ if __name__ == "__main__":
     test_link_checks()
 
 
-def test_muse():
-    import datetime as dt
+def test_muse_and_redact():
+    import os
     import feed as f
-    now = dt.datetime.now(dt.timezone.utc)
-    recent = (now - dt.timedelta(days=3)).isoformat().replace("+00:00", "Z")
-    old = (now - dt.timedelta(days=40)).isoformat().replace("+00:00", "Z")
-    job = lambda n, d, u: {"name": n, "publication_date": d, "company": {"name": "Acme AM"},
-                           "locations": [{"name": "New York, NY"}], "levels": [{"name": "Senior Level"}],
-                           "refs": {"landing_page": u}}
-    pages = [{"page_count": 2, "results": [job("Director, Investment Technology", recent, "https://m/1"),
-                                           job("Director, Investment Technology", recent, "https://m/1"),
-                                           job("Head of Payroll", recent, "https://m/2")]},
-             {"page_count": 2, "results": [job("Head of Private Markets Technology", old, "https://m/3")]}]
-    calls = []
-    def fake_get(url, params=None, **k):
-        calls.append(dict(params))
-        return _Resp(200, url, "", pages[int(dict(params)["page"])])
-    _Resp.raise_for_status = lambda self: None
-    orig = f.requests.get
-    f.requests.get = fake_get
-    try:
-        spec = {"recency_days": 14, "muse": {"categories": ["Data and Analytics"], "levels": ["Senior Level"],
-                "title_keywords": ["investment technology", "private markets"], "max_pages": 5}}
-        out = f.fetch_muse(spec)
-        assert [r["url"] for r in out] == ["https://m/1"], out   # dupes, non-matches, stale removed
-        assert len(calls) == 2 and calls[0]["category"] == "Data and Analytics"
-        print("muse OK")
-    finally:
-        f.requests.get = orig
+    reply = {"output": [{"type": "web_search_call"},
+                        {"type": "message", "content": [{"type": "output_text", "text": MUSE_TEXT}]}]}
+    assert f.extract_json_array(f.responses_text(reply))[0]["company"] == "Klaviyo"
+    os.environ["MUSE_API_KEY"] = "LLM_1234567890_secretvalue"
+    leaked = "HTTPError 404 for url: https://x/jobs?api_key=LLM_1234567890_secretvalue&page=0"
+    clean = f.redact(leaked)
+    assert "secretvalue" not in clean and "[REDACTED]" in clean, clean
+    assert "secretvalue" not in f.redact("Bearer LLM_1234567890_secretvalue failed")
+    del os.environ["MUSE_API_KEY"]
+    print("muse + redact OK")
 
 
 if __name__ == "__main__":
-    test_muse()
+    test_muse_and_redact()

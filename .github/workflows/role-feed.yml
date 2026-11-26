@@ -20,7 +20,7 @@ on:
 jobs:
   feed:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,4 +39,5 @@ jobs:
           CLIENT_SPECS_JSON: ${{ secrets.CLIENT_SPECS_JSON }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           GROK_MODEL: ${{ vars.GROK_MODEL }}
+          MUSE_MODEL: ${{ vars.MUSE_MODEL }}
         run: python feed.py ${{ github.event.inputs.clients }}
